@@ -1,0 +1,92 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  /* Claro (Default) - Paleta Papel Claro e Laranja */
+  --bg-app: #FAFAF9;
+  --bg-card: #FFFFFF;
+  --bg-surface: #F5F5F4;
+  --bg-surface-subtle: #F9F9F8;
+  --border-app: #E7E5E4;
+  --border-app-subtle: #F0EEEB;
+  --text-primary: #1C1917;
+  --text-secondary: #57534E;
+  --text-muted: #78716C;
+  
+  /* Laranja da marca - Reservado exclusivamente para o Logo e Botões Principais */
+  --brand-orange: #C2410C;
+  --brand-orange-light: #F28C5B;
+  --brand-orange-hover: #ea580c;
+  --brand-orange-text: #FFFFFF;
+}
+
+html.dark {
+  /* Escuro - Grafite e Laranja */
+  --bg-app: #151514;
+  --bg-card: #1E1E1C;
+  --bg-surface: #262623;
+  --bg-surface-subtle: #1a1a18;
+  --border-app: #2E2E2A;
+  --border-app-subtle: #242421;
+  --text-primary: #F2F1EE;
+  --text-secondary: #A8A29E;
+  --text-muted: #78716C;
+
+  --brand-orange: #C2410C;
+  --brand-orange-light: #F28C5B;
+  --brand-orange-hover: #ea580c;
+  --brand-orange-text: #FFFFFF;
+}
+
+@layer base {
+  html, body {
+    overflow-x: hidden;
+    background-color: var(--bg-app);
+    color: var(--text-primary);
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    transition: background-color 0.15s ease, color 0.15s ease;
+  }
+
+  /* Custom sleek scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: var(--bg-app);
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--border-app);
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--text-secondary);
+  }
+}
+
+/* Theme helper utility classes */
+.bg-app-main {
+  background-color: var(--bg-app);
+}
+.bg-card-main {
+  background-color: var(--bg-card);
+}
+.bg-surface-main {
+  background-color: var(--bg-surface);
+}
+.bg-subtle-main {
+  background-color: var(--bg-surface-subtle);
+}
+.border-app-main {
+  border-color: var(--border-app);
+}
+.text-primary-main {
+  color: var(--text-primary);
+}
+.text-secondary-main {
+  color: var(--text-secondary);
+}
+.text-muted-main {
+  color: var(--text-muted);
+}

@@ -1,0 +1,6 @@
+{
+  "name": "OEM Supplier Intelligence Database v2",
+  "description": "High-precision OEM product and supplier intelligence database with multi-source extraction (JSON-LD, Product Attributes DT/DD, Made-in-China enrichment APIs) and normalized PostgreSQL persistence.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
