@@ -49,8 +49,18 @@ async function sha(s: string) {
 }
 const normSku = (s: string) => s.toUpperCase().replace(/[\s_]/g, "").replace(/^([A-Z]+)-(\d)/, "$1$2");
 const semQuery = (u: string) => { const x = new URL(u); return x.origin + x.pathname; };
+// página 1 é a própria URL (loja ou série); as seguintes trocam ou acrescentam o sufixo -N.html
 const paginaUrl = (base: string, n: number) =>
-  /-\d+\.html$/.test(base) ? base.replace(/-\d+\.html$/, `-${n}.html`) : `${new URL(base).origin}/product-list-${n}.html`;
+  /-\d+\.html$/.test(base) ? base.replace(/-\d+\.html$/, `-${n}.html`)
+    : n === 1 ? base
+    : base.includes("/product-group/") ? base.replace(/\.html$/, `-${n}.html`)
+    : `${new URL(base).origin}/product-list-${n}.html`;
+// NCM do anúncio quando vier com 8 dígitos; senão o padrão da linha fitness (vai para metadados na Fase 1)
+const NCM_PADRAO = "95069100";
+const ncmDe = (hs: string | null) => { const n = (hs ?? "").replace(/\D/g, ""); return n.length === 8 ? n : NCM_PADRAO; };
+// imagens só de HTTPS do Made-in-China e da CDN dele
+const HOSTS_IMAGEM = /(^|\.)(made-in-china\.com|micstatic\.com)$/i;
+const imagemPermitida = (u: string) => { try { const x = new URL(u); return x.protocol === "https:" && HOSTS_IMAGEM.test(x.hostname); } catch { return false; } };
 
 // ---------- séries (product-group) → linha ----------
 const GENERICO = /hot\s*sale|new\s*arrival|^others?\b|accessor|^strength machine$|commercial fitness|^sale$|featured/i;
@@ -144,6 +154,7 @@ async function salvarImagens(urls: string[], fabricaSlug: string, pasta: string,
   }
   let ok = 0;
   for (const [i, u] of urls.entries()) {
+    if (!imagemPermitida(u)) continue;
     if (produtoId && jaTem >= MAX_POR_SKU) break;
     if (!produtoId && ok >= MAX_POR_SKU) break;
     // a mesma foto pode servir a mais de um SKU: cada produto tem a sua linha, apontando para o mesmo arquivo
@@ -159,6 +170,7 @@ async function salvarImagens(urls: string[], fabricaSlug: string, pasta: string,
       const m = u.match(/\/2f0j00([A-Za-z0-9]+)\//);
       const src = m ? u.replace("/2f0j00", `/${IMG_VARIANTE}`) : u;
       const r = await get(src, 2);
+      if (!imagemPermitida(r.url) || !(r.headers.get("content-type") ?? "").startsWith("image/")) continue;
       const buf = new Uint8Array(await r.arrayBuffer());
       if (buf.byteLength < 5_000) continue;
       const ext = (r.headers.get("content-type") ?? "image/webp").split("/")[1].split(";")[0];
@@ -238,7 +250,7 @@ async function processarProduto(url: string, fab: { id: string; slug: string }, 
       await db.from("produtos").update(campos).eq("id", hit.id);
     } else {
       const { data: novo } = await db.from("produtos").insert({
-        fabrica_id: fab.id, sku: d.modelo.toUpperCase().trim(), nome_curto: d.titulo.slice(0, 60), ncm: "95069100", ...campos,
+        fabrica_id: fab.id, sku: d.modelo.toUpperCase().trim(), nome_curto: d.titulo.slice(0, 60), ncm: ncmDe(d.hs), ...campos,
       }).select("id").single();
       produtoId = novo?.id ?? null;
     }
