@@ -110,12 +110,15 @@ create table if not exists public.produto_imagens (
   id            uuid primary key default gen_random_uuid(),
   produto_id    uuid references public.produtos (id) on delete cascade,
   anuncio_id    uuid references public.anuncios_mic (id) on delete set null,
-  url_origem    text not null unique,
+  url_origem    text not null,
   storage_path  text,
   ordem         integer not null default 0,
   principal     boolean not null default false,
-  criado_em     timestamptz not null default now()
+  criado_em     timestamptz not null default now(),
+  -- a mesma foto pode servir a mais de um SKU: uma linha por produto, apontando para o mesmo arquivo
+  unique nulls not distinct (produto_id, url_origem)
 );
+create index if not exists produto_imagens_url_idx on public.produto_imagens (url_origem);
 create index if not exists produto_imagens_produto_idx on public.produto_imagens (produto_id, ordem);
 
 create table if not exists public.produto_atributos (
@@ -175,6 +178,7 @@ create table if not exists public.crawler_fila (
   prioridade            integer not null default 100,
   proxima_pagina        integer not null default 1,
   ultimo_primeiro_link  text,
+  tentativas            integer not null default 0,
   ativo                 boolean not null default true,
   em_execucao_desde     timestamptz,
   atualizado_em         timestamptz
@@ -195,20 +199,26 @@ create table if not exists public.crawler_jobs (
 );
 
 -- ---------- imagens além do limite por SKU (usada por crawl-mic acao=limpar_imagens) ----------
+-- storage_path volta nulo quando outra linha que fica usa o mesmo arquivo: apaga a linha, não o arquivo.
 create or replace function public.imagens_excedentes(max_por_sku integer, limite integer)
 returns table (id uuid, storage_path text)
 language sql
 stable
 as $$
-  select i.id, i.storage_path
-  from (
+  with ordenadas as (
     select pi.id, pi.storage_path,
            row_number() over (partition by pi.produto_id order by pi.principal desc, pi.ordem, pi.criado_em) as n
     from public.produto_imagens pi
     where pi.produto_id is not null
-  ) i
-  where i.n > max_por_sku
-  limit limite;
+  ),
+  excedentes as (select o.id, o.storage_path from ordenadas o where o.n > max_por_sku limit limite)
+  select e.id,
+         case when exists (
+           select 1 from public.produto_imagens outra
+           where outra.storage_path = e.storage_path
+             and outra.id not in (select x.id from excedentes x)
+         ) then null else e.storage_path end
+  from excedentes e;
 $$;
 
 -- ---------- acesso ----------

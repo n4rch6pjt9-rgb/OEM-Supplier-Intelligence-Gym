@@ -10,11 +10,26 @@ const db = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SE
   auth: { persistSession: false },
 });
 
+// Só o agendamento (service role) chama esta função; o gateway já validou a assinatura do JWT.
+function chamadorConfiavel(req: Request) {
+  const token = req.headers.get("Authorization")?.replace(/^Bearer\s+/i, "") ?? "";
+  if (token && token === Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")) return true;
+  try {
+    const b64 = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+    return JSON.parse(atob(b64.padEnd(Math.ceil(b64.length / 4) * 4, "="))).role === "service_role";
+  } catch { return false; }
+}
+
 const fmt = (d: Date) =>
   `${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}-${d.getFullYear()}`;
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
+  if (!chamadorConfiavel(req)) {
+    return new Response(JSON.stringify({ erro: "Acesso restrito ao agendamento (service role)" }), {
+      status: 403, headers: { ...cors, "Content-Type": "application/json" },
+    });
+  }
   try {
     const body = req.method === "POST" ? await req.json().catch(() => ({})) : {};
     const dias = Math.min(Number(body.dias ?? 7), 365);

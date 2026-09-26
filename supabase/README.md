@@ -27,3 +27,5 @@ Estrutura do ADR-003: um Operador DB (HUB) e um Client DB por consignatário.
 
 3. Publicar as funções: `supabase functions deploy cambio-ptax` e `supabase functions deploy crawl-mic`.
 4. Cadastrar uma fábrica: `POST /functions/v1/crawl-mic` com `{ "acao": "descobrir", "url": "https://<loja>.en.made-in-china.com/" }`. O agendamento processa a fila a partir daí.
+
+As duas funções só aceitam a service role (resposta 403 para `anon` e usuários logados). Uma página com erro é repetida até 3 vezes (`crawler_fila.tentativas`) antes de o crawler seguir para a próxima.

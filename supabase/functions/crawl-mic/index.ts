@@ -16,6 +16,7 @@ const MAX_POR_SKU = 2;                     // 2 imagens/SKU em 550px (~30 KB cad
 const IMG_VARIANTE = "202f0j00";           // 550x550 · original "2f0j00" fica em url_origem
 const REVISITAR_DIAS = 7;                  // anúncio extraído há menos que isso não é baixado de novo
 const LIMITE_MS = 120_000;                 // margem para o limite de execução da Edge Function
+const MAX_TENTATIVAS = 3;                  // página com erro é repetida até 3 vezes antes de seguir
 
 const db = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, {
   auth: { persistSession: false },
@@ -23,6 +24,16 @@ const db = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SE
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const json = (b: unknown, s = 200) =>
   new Response(JSON.stringify(b), { status: s, headers: { ...cors, "Content-Type": "application/json" } });
+
+// Só o agendamento (service role) chama esta função; o gateway já validou a assinatura do JWT.
+function chamadorConfiavel(req: Request) {
+  const token = req.headers.get("Authorization")?.replace(/^Bearer\s+/i, "") ?? "";
+  if (token && token === Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")) return true;
+  try {
+    const b64 = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+    return JSON.parse(atob(b64.padEnd(Math.ceil(b64.length / 4) * 4, "="))).role === "service_role";
+  } catch { return false; }
+}
 
 async function get(url: string, tries = 3): Promise<Response> {
   for (let i = 0; i < tries; i++) {
@@ -82,7 +93,7 @@ function parseProduto(html: string) {
   const imgs: string[] = (Array.isArray(p.image) ? p.image : [p.image]).filter(Boolean)
     .map((u: string) => (u.startsWith("//") ? "https:" + u : u));
   const faixa = html.match(/US\s*\$\s*([\d,.]+)\s*-\s*([\d,.]+)/);
-  const moq = (props["MOQ"] ?? html.match(/Min\.\s*Order:?\s*<[^>]*>?\s*([\d,]+)/i)?.[1] ?? "").match(/\d+/)?.[0];
+  const moq = (props["MOQ"] ?? html.match(/Min\.\s*Order:?\s*<[^>]*>?\s*([\d,]+)/i)?.[1] ?? "").replace(/(\d),(?=\d{3}\b)/g, "$1").match(/\d+/)?.[0];
   const dim = (s?: string) => s?.match(/(\d{3,4})\s*[*x×X]\s*(\d{3,4})\s*[*x×X]\s*(\d{3,4})/)?.slice(1, 4).map(Number) ?? null;
   const cx = (props["Package Size"] ?? "").match(/([\d.]+)\s*cm\s*\*\s*([\d.]+)\s*cm\s*\*\s*([\d.]+)\s*cm/i);
   const pkg = (props["Transport Package"] ?? props["Package"] ?? "").toLowerCase();
@@ -135,10 +146,14 @@ async function salvarImagens(urls: string[], fabricaSlug: string, pasta: string,
   for (const [i, u] of urls.entries()) {
     if (produtoId && jaTem >= MAX_POR_SKU) break;
     if (!produtoId && ok >= MAX_POR_SKU) break;
-    const { data: ja } = await db.from("produto_imagens").select("id, produto_id").eq("url_origem", u).maybeSingle();
-    if (ja) {
-      if (!ja.produto_id && produtoId) await db.from("produto_imagens").update({ produto_id: produtoId }).eq("id", ja.id);
-      ok++; continue;
+    // a mesma foto pode servir a mais de um SKU: cada produto tem a sua linha, apontando para o mesmo arquivo
+    const { data: jas } = await db.from("produto_imagens").select("id, produto_id, storage_path").eq("url_origem", u);
+    if (jas?.length) {
+      if (!produtoId || jas.some((x) => x.produto_id === produtoId)) { ok++; continue; }
+      const solta = jas.find((x) => !x.produto_id);
+      if (solta) await db.from("produto_imagens").update({ produto_id: produtoId }).eq("id", solta.id);
+      else await db.from("produto_imagens").insert({ produto_id: produtoId, anuncio_id: anuncioId, url_origem: u, storage_path: jas[0].storage_path, ordem: i });
+      ok++; jaTem++; continue;
     }
     try {
       const m = u.match(/\/2f0j00([A-Za-z0-9]+)\//);
@@ -203,17 +218,21 @@ async function processarProduto(url: string, fab: { id: string; slug: string }, 
 
   // vínculo com SKU (o site é a fonte principal: cria o SKU se não existir)
   let produtoId: string | null = null, status = "pendente", score: number | null = null;
-  if (d.modelo) {
+  const campos = {
+    nome_original: d.titulo, preco_fob_usd: d.preco_min, preco_fob_usd_max: d.preco_max,
+    ...(d.peso ? { peso_liquido_kg: d.peso } : {}),
+    ...(d.montado ? { montado_c_mm: d.montado[0], montado_l_mm: d.montado[1], montado_a_mm: d.montado[2] } : {}),
+    ...(linhaId ? { linha_id: linhaId } : {}),
+    origem: "site", visto_site_em: new Date().toISOString(),
+  };
+  // vínculo revisado por uma pessoa vale mais que o SKU detectado: nada é criado nem sobrescrito
+  if (prev && ["confirmado", "descartado"].includes(prev.status_vinculo)) {
+    produtoId = prev.produto_id; status = prev.status_vinculo; score = prev.score_similaridade;
+    if (status === "confirmado" && produtoId) await db.from("produtos").update(campos).eq("id", produtoId);
+  } else if (d.modelo) {
     const alvo = normSku(d.modelo);
     const { data: cands } = await db.from("produtos").select("id, sku").eq("fabrica_id", fab.id);
     const hit = cands?.find((c) => normSku(c.sku) === alvo);
-    const campos = {
-      nome_original: d.titulo, preco_fob_usd: d.preco_min, preco_fob_usd_max: d.preco_max,
-      ...(d.peso ? { peso_liquido_kg: d.peso } : {}),
-      ...(d.montado ? { montado_c_mm: d.montado[0], montado_l_mm: d.montado[1], montado_a_mm: d.montado[2] } : {}),
-      ...(linhaId ? { linha_id: linhaId } : {}),
-      origem: "site", visto_site_em: new Date().toISOString(),
-    };
     if (hit) {
       produtoId = hit.id;
       await db.from("produtos").update(campos).eq("id", hit.id);
@@ -224,9 +243,6 @@ async function processarProduto(url: string, fab: { id: string; slug: string }, 
       produtoId = novo?.id ?? null;
     }
     status = "sugerido"; score = 1;
-  }
-  if (prev && ["confirmado", "descartado"].includes(prev.status_vinculo)) {
-    produtoId = prev.produto_id; status = prev.status_vinculo; score = prev.score_similaridade;
   }
 
   const { data: an, error } = await db.from("anuncios_mic").upsert({
@@ -291,6 +307,7 @@ async function processarPagina(pageUrl: string, fab: { id: string; slug: string 
     try {
       const r = await processarProduto(l, fab, linhaId, forcar);
       resultados.push(r);
+      if ((r as { erro?: string }).erro) erros.push(r);
       if (!(r as { pulado?: boolean }).pulado) await sleep(500);
     } catch (e) { erros.push({ url: l, erro: String(e) }); }
   }
@@ -300,20 +317,27 @@ async function processarPagina(pageUrl: string, fab: { id: string; slug: string 
 // ---------- mantém no máximo MAX_POR_SKU imagens por produto ----------
 async function limparImagens(limite: number) {
   const { data } = await db.rpc("imagens_excedentes", { max_por_sku: MAX_POR_SKU, limite });
-  const linhas = (data ?? []) as { id: string; storage_path: string }[];
+  const linhas = (data ?? []) as { id: string; storage_path: string | null }[];
+  let removidas = 0, falhas = 0;
   for (let i = 0; i < linhas.length; i += 100) {
     const lote = linhas.slice(i, i + 100);
-    const paths = lote.map((x) => x.storage_path).filter(Boolean);
-    if (paths.length) await db.storage.from("produtos").remove(paths);
+    const paths = lote.map((x) => x.storage_path).filter((x): x is string => !!x);
+    if (paths.length) {
+      // se o Storage falhar, a linha fica para a próxima limpeza encontrar o arquivo de novo
+      const rm = await db.storage.from("produtos").remove(paths);
+      if (rm.error) { falhas += lote.length; continue; }
+    }
     await db.from("produto_imagens").delete().in("id", lote.map((x) => x.id));
+    removidas += lote.length;
   }
-  return { removidas: linhas.length };
+  return { removidas, falhas };
 }
 
 // ---------- descobrir fábrica + séries ----------
 async function descobrir(url: string) {
   const origin = new URL(url).origin;
   const host = new URL(url).hostname;
+  if (new URL(url).protocol !== "https:" || !host.endsWith(".made-in-china.com")) throw new Error("URL não é do Made-in-China");
   const html = await (await get(`${origin}/product-list-1.html`)).text();
   const titulo = html.match(/<title>([^<]+)<\/title>/)?.[1] ?? "";
   const nome = titulo.split(" - ").slice(-2, -1)[0]?.trim() || host.split(".")[0];
@@ -355,6 +379,7 @@ async function descobrir(url: string) {
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
+  if (!chamadorConfiavel(req)) return json({ erro: "Acesso restrito ao agendamento (service role)" }, 403);
   try {
     const body = await req.json();
     if (body.acao === "descobrir") return json(await descobrir(body.url));
@@ -368,19 +393,29 @@ Deno.serve(async (req) => {
       const { data: job } = await db.from("crawler_jobs").insert({
         fabrica_id: fab!.id, url: pageUrl, tipo: f.tipo, status: "executando", iniciado_em: new Date().toISOString(),
       }).select("id").single();
-      const r = await processarPagina(pageUrl, fab!, linhaId, 24, false);
+      let r: Awaited<ReturnType<typeof processarPagina>>;
+      try {
+        r = await processarPagina(pageUrl, fab!, linhaId, 24, false);
+      } catch (e) {
+        // listagem não abriu: mesma página na próxima rodada
+        r = { links: [], resultados: [], erros: [{ url: pageUrl, erro: String(e) }], completa: false };
+      }
+      // página com falhas é repetida (anúncios já gravados são pulados por REVISITAR_DIAS) até MAX_TENTATIVAS
+      const repetir = r.erros.length > 0 && (f.tentativas ?? 0) + 1 < MAX_TENTATIVAS;
+      const avancar = r.completa && !repetir;
       const primeiro = r.links[0] ?? null;
-      const fim = r.links.length === 0 || (primeiro !== null && primeiro === f.ultimo_primeiro_link);
+      const fim = avancar && (r.links.length === 0 || (primeiro !== null && primeiro === f.ultimo_primeiro_link));
       await db.from("crawler_fila").update({
-        proxima_pagina: r.completa && !fim ? f.proxima_pagina + 1 : f.proxima_pagina,
-        ultimo_primeiro_link: r.completa ? primeiro : f.ultimo_primeiro_link,
+        proxima_pagina: avancar && !fim ? f.proxima_pagina + 1 : f.proxima_pagina,
+        ultimo_primeiro_link: avancar ? primeiro : f.ultimo_primeiro_link,
+        tentativas: avancar ? 0 : repetir ? (f.tentativas ?? 0) + 1 : f.tentativas ?? 0,
         ativo: !fim, em_execucao_desde: null, atualizado_em: new Date().toISOString(),
       }).eq("id", f.id);
       await db.from("crawler_jobs").update({
-        status: "concluido", paginas_processadas: 1, anuncios_encontrados: r.links.length, erros: r.erros,
+        status: r.erros.length ? "com_erros" : "concluido", paginas_processadas: 1, anuncios_encontrados: r.links.length, erros: r.erros,
         finalizado_em: new Date().toISOString(),
       }).eq("id", job!.id);
-      return json({ pagina: f.proxima_pagina, anuncios: r.links.length, completa: r.completa, fim, erros: r.erros.length });
+      return json({ pagina: f.proxima_pagina, anuncios: r.links.length, completa: r.completa, fim, repetir, erros: r.erros.length });
     }
 
     // modo avulso
