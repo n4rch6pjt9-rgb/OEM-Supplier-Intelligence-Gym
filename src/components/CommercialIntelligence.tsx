@@ -18,6 +18,7 @@ import {
 import { SupplierItem, ProductItem } from '../types.ts';
 import { Button } from './ui/button.tsx';
 import { Badge } from './ui/badge.tsx';
+import { SupplierRegionChart } from './SupplierRegionChart.tsx';
 
 interface CommercialIntelligenceProps {
   suppliers: SupplierItem[];
@@ -84,6 +85,14 @@ export const CommercialIntelligence: React.FC<CommercialIntelligenceProps> = ({
           </Button>
         </div>
       </div>
+
+      {/* Gráfico Analítico Recharts: Comparativo de Produtos por Região Fornecedora */}
+      <SupplierRegionChart
+        products={products}
+        suppliers={suppliers}
+        activeSupplierId={activeSupplierId}
+        onSelectSupplier={(supId) => setActiveSupplierId(supId)}
+      />
 
       {/* Seleção de Fábrica Segmentada */}
       <div className="flex items-center gap-2 overflow-x-auto pb-1">

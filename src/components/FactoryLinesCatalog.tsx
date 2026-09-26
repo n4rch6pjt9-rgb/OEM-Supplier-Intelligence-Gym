@@ -24,6 +24,8 @@ import {
   Square,
   RefreshCw,
   Container,
+  Filter,
+  RotateCcw,
 } from 'lucide-react';
 import { SupplierItem, ProductItem } from '../types.ts';
 import {
@@ -35,6 +37,11 @@ import {
 } from '../lib/exportUtils.ts';
 import { Button } from './ui/button.tsx';
 import { Badge } from './ui/badge.tsx';
+import {
+  SupplierFilterPanel,
+  CAPABILITY_PRESETS,
+  CERTIFICATION_PRESETS,
+} from './SupplierFilterPanel.tsx';
 
 interface FactoryLinesCatalogProps {
   suppliers: SupplierItem[];
@@ -57,6 +64,30 @@ export const FactoryLinesCatalog: React.FC<FactoryLinesCatalogProps> = ({
   const [selectedSkuDetail, setSelectedSkuDetail] = useState<ProductItem | null>(null);
   const [viewMode, setViewMode] = useState<'cards' | 'tree' | 'hs_focus'>('hs_focus');
   const [selectedProductIds, setSelectedProductIds] = useState<Set<string>>(new Set());
+
+  // Estados de Filtro Multi-Select por Capacidade Fabril e Certificação
+  const [selectedCapabilities, setSelectedCapabilities] = useState<string[]>([]);
+  const [selectedCertifications, setSelectedCertifications] = useState<string[]>([]);
+  const [oemOdmOnly, setOemOdmOnly] = useState<boolean>(false);
+  const [isFilterPanelExpanded, setIsFilterPanelExpanded] = useState<boolean>(false);
+
+  const toggleCapability = (capId: string) => {
+    setSelectedCapabilities(prev =>
+      prev.includes(capId) ? prev.filter(c => c !== capId) : [...prev, capId]
+    );
+  };
+
+  const toggleCertification = (certId: string) => {
+    setSelectedCertifications(prev =>
+      prev.includes(certId) ? prev.filter(c => c !== certId) : [...prev, certId]
+    );
+  };
+
+  const resetFilters = () => {
+    setSelectedCapabilities([]);
+    setSelectedCertifications([]);
+    setOemOdmOnly(false);
+  };
 
   // Ordena para que BRTW (fábrica solicitada pelo usuário) apareça em primeiro lugar
   const sortedSuppliers = [...suppliers].sort((a, b) => {
@@ -106,11 +137,38 @@ export const FactoryLinesCatalog: React.FC<FactoryLinesCatalogProps> = ({
     };
   });
 
-  // Filtra por query ou por modo de foco
-  const filteredFactories = factoriesWithLines.filter(({ supplier, lines }) => {
+  // Filtra por query, modo de foco e pelos filtros de capacidades e certificações
+  const filteredFactories = factoriesWithLines.filter(({ supplier, lines, factoryProducts }) => {
     if (viewMode === 'hs_focus') {
       return supplier.supplierId === 'sup_brtw_baodelong';
     }
+
+    // 1. Filtro de Capacidades Fabris (Multi-Select AND: todas as capacidades marcadas devem ser atendidas)
+    if (selectedCapabilities.length > 0) {
+      const satisfiesCapabilities = selectedCapabilities.every(capId => {
+        const preset = CAPABILITY_PRESETS.find(p => p.id === capId);
+        return preset ? preset.check(supplier, factoryProducts) : true;
+      });
+      if (!satisfiesCapabilities) return false;
+    }
+
+    // 2. Filtro de Certificações Internacionais (Multi-Select AND: todas as certificações marcadas devem estar presentes)
+    if (selectedCertifications.length > 0) {
+      const satisfiesCertifications = selectedCertifications.every(certId => {
+        const preset = CERTIFICATION_PRESETS.find(p => p.id === certId);
+        return preset ? preset.check(supplier, factoryProducts) : true;
+      });
+      if (!satisfiesCertifications) return false;
+    }
+
+    // 3. Filtro OEM/ODM Homologado
+    if (oemOdmOnly) {
+      if (!supplier.oemAvailable || !supplier.customizationAvailable) {
+        return false;
+      }
+    }
+
+    // 4. Filtro de Busca Textual Global
     if (!globalQuery.trim()) return true;
     const q = globalQuery.toLowerCase();
     const matchSupplier =
@@ -309,6 +367,47 @@ export const FactoryLinesCatalog: React.FC<FactoryLinesCatalogProps> = ({
         </div>
       </div>
 
+      {/* Painel Multi-Select de Filtros: Capacidades Fabris & Certificações */}
+      <SupplierFilterPanel
+        suppliers={suppliers}
+        products={products}
+        selectedCapabilities={selectedCapabilities}
+        onToggleCapability={toggleCapability}
+        selectedCertifications={selectedCertifications}
+        onToggleCertification={toggleCertification}
+        oemOdmOnly={oemOdmOnly}
+        onToggleOemOdmOnly={() => setOemOdmOnly(!oemOdmOnly)}
+        onResetFilters={resetFilters}
+        totalFilteredCount={filteredFactories.length}
+        totalSuppliersCount={factoriesWithLines.length}
+        isExpanded={isFilterPanelExpanded}
+        onToggleExpanded={() => setIsFilterPanelExpanded(!isFilterPanelExpanded)}
+      />
+
+      {/* Alerta de Nenhum Resultado Encontrado pelos Filtros */}
+      {filteredFactories.length === 0 && (
+        <div className="bg-[var(--bg-card)] border border-[var(--border-app)] rounded-2xl p-10 text-center space-y-3">
+          <div className="w-12 h-12 rounded-2xl bg-amber-500/10 text-[#C2410C] flex items-center justify-center mx-auto border border-amber-500/20">
+            <Filter className="w-6 h-6" />
+          </div>
+          <h3 className="text-base font-bold text-[var(--text-primary)]">
+            Nenhuma fábrica atende a todos os critérios selecionados
+          </h3>
+          <p className="text-xs text-[var(--text-secondary)] max-w-md mx-auto">
+            Tente remover alguns filtros de capacidade fabril ou certificação para expandir os resultados do catálogo.
+          </p>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={resetFilters}
+            className="gap-1.5 text-xs text-[#C2410C]"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+            <span>Redefinir Todos os Filtros</span>
+          </Button>
+        </div>
+      )}
+
       {/* VIEW MODE 1: VISUALIZAÇÃO EM ÁRVORE HIERÁRQUICA ESTRUTURADA */}
       {viewMode === 'tree' && (
         <div className="bg-[var(--bg-card)] border border-[var(--border-app)] rounded-2xl p-6 shadow-xs space-y-6">
@@ -332,7 +431,7 @@ export const FactoryLinesCatalog: React.FC<FactoryLinesCatalogProps> = ({
           </div>
 
           <div className="space-y-6 text-xs">
-            {factoriesWithLines.map(({ supplier, lines }) => (
+            {filteredFactories.map(({ supplier, lines }) => (
               <div key={supplier.supplierId} className="space-y-3 bg-[var(--bg-surface)] p-5 rounded-xl border border-[var(--border-app)]">
                 {/* Nível 1: Fábrica */}
                 <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-[var(--border-app)]">
@@ -587,7 +686,7 @@ export const FactoryLinesCatalog: React.FC<FactoryLinesCatalogProps> = ({
                     </div>
                   </div>
 
-                  {/* Resumo de Maquinário Industrial */}
+                  {/* Resumo de Maquinário Industrial & Capacidades */}
                   {supplier.productionMachines && supplier.productionMachines.length > 0 && (
                     <div className="mt-3 pt-3 border-t border-[var(--border-app)] flex flex-wrap items-center gap-1.5 text-[11px]">
                       <span className="text-[var(--text-secondary)] font-semibold mr-1">Maquinário Homologado:</span>
@@ -601,6 +700,47 @@ export const FactoryLinesCatalog: React.FC<FactoryLinesCatalogProps> = ({
                       ))}
                     </div>
                   )}
+
+                  {/* Badges de Certificações & Capacidades Atendidas da Fábrica */}
+                  <div className="mt-2.5 pt-2.5 border-t border-[var(--border-app)] flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="text-[var(--text-secondary)] font-semibold text-[10px] uppercase">
+                        Conformidade &amp; Normas:
+                      </span>
+                      {CERTIFICATION_PRESETS.filter(cert => cert.check(supplier, factoryProducts)).map(cert => (
+                        <Badge
+                          key={cert.id}
+                          variant={cert.badgeVariant}
+                          className="text-[10px] py-0 px-1.5 font-medium"
+                        >
+                          {cert.id}
+                        </Badge>
+                      ))}
+                      {supplier.inspectionType && (
+                        <span className="text-[10px] text-[var(--text-secondary)] italic truncate max-w-sm" title={supplier.inspectionType}>
+                          &bull; {supplier.inspectionType}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      {supplier.oemAvailable && (
+                        <span className="text-[10px] font-semibold text-emerald-700 dark:text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                          OEM Homologado
+                        </span>
+                      )}
+                      {supplier.odmAvailable && (
+                        <span className="text-[10px] font-semibold text-cyan-700 dark:text-cyan-400 bg-cyan-500/10 px-2 py-0.5 rounded border border-cyan-500/20">
+                          ODM Disponível
+                        </span>
+                      )}
+                      {supplier.customizationAvailable && (
+                        <span className="text-[10px] font-semibold text-amber-700 dark:text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">
+                          Personalização Total
+                        </span>
+                      )}
+                    </div>
+                  </div>
                 </div>
 
                 {/* Corpo do Card: Linhas de Produtos & Tabelas sem Barra de Rolagem */}
